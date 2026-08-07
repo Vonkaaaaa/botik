@@ -12,12 +12,19 @@ import java.util.Map;
 
 public class WeatherService {
     private final HttpClient httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
+            .connectTimeout(Duration.ofSeconds(12))
+            .followRedirects(HttpClient.Redirect.ALWAYS)
             .build();
 
     @SuppressWarnings("unchecked")
     public String getWeatherReport(String city, double lat, double lon) {
-        // Enforce Locale.US so floating point numbers use '.' instead of ',' in HTTP URL
+        // Enforce valid coordinates for Kharkiv if 0
+        if (lat == 0.0 || lon == 0.0) {
+            lat = 49.9935;
+            lon = 36.2304;
+        }
+
+        // Primary: Open-Meteo API
         String url = String.format(Locale.US,
                 "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto",
                 lat, lon
@@ -26,6 +33,8 @@ public class WeatherService {
         try {
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(url))
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .header("Accept", "application/json")
                     .GET()
                     .timeout(Duration.ofSeconds(10))
                     .build();
@@ -70,10 +79,57 @@ public class WeatherService {
                 System.err.println("[WeatherService] Open-Meteo returned HTTP " + resp.statusCode() + ": " + resp.body());
             }
         } catch (Exception e) {
-            System.err.println("[WeatherService] Error fetching weather: " + e.getMessage());
+            System.err.println("[WeatherService] Error fetching weather from Open-Meteo: " + e.getMessage());
         }
 
-        return "⚠️ Не удалось получить данные о погоде для г. " + city + ". Проверьте интернет-соединение.";
+        // Secondary Fallback: Wttr.in API
+        String fallbackReport = fetchWttrInWeather(city);
+        if (fallbackReport != null) {
+            return fallbackReport;
+        }
+
+        return "⚠️ Не удалось получить данные о погоде для г. " + city + ". Попробуйте позже.";
+    }
+
+    @SuppressWarnings("unchecked")
+    private String fetchWttrInWeather(String city) {
+        try {
+            String query = city.equalsIgnoreCase("Харьков") ? "Kharkiv" : city;
+            String url = "https://wttr.in/" + query + "?format=j1";
+
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+                    .GET()
+                    .timeout(Duration.ofSeconds(10))
+                    .build();
+
+            HttpResponse<String> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() == 200) {
+                Map<String, Object> json = (Map<String, Object>) JsonUtil.parse(resp.body());
+                if (json != null && json.get("current_condition") instanceof java.util.List) {
+                    java.util.List<?> condList = (java.util.List<?>) json.get("current_condition");
+                    if (!condList.isEmpty() && condList.get(0) instanceof Map) {
+                        Map<String, Object> current = (Map<String, Object>) condList.get(0);
+                        double temp = parseDouble(current.get("temp_C"));
+                        double feels = parseDouble(current.get("FeelsLikeC"));
+                        double humidity = parseDouble(current.get("humidity"));
+                        double wind = parseDouble(current.get("windspeedKmph")) / 3.6; // convert to m/s
+
+                        StringBuilder sb = new StringBuilder();
+                        sb.append(String.format("🌤️ <b>Погода в г. %s</b>\n", city));
+                        sb.append("─────────────────────\n");
+                        sb.append(String.format(Locale.US, "🌡️ <b>Температура:</b> %.1f°C (ощущается как %.1f°C)\n", temp, feels));
+                        sb.append(String.format(Locale.US, "💧 <b>Влажность:</b> %.0f%%\n", humidity));
+                        sb.append(String.format(Locale.US, "💨 <b>Ветер:</b> %.1f м/с\n", wind));
+                        return sb.toString();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("[WeatherService] Wttr.in fallback failed: " + e.getMessage());
+        }
+        return null;
     }
 
     private String getWeatherEmoji(int code) {

@@ -45,6 +45,8 @@ public class BotConfig {
     }
 
     public String getWeatherCity() {
+        String envCity = System.getenv("WEATHER_CITY");
+        if (envCity != null && !envCity.trim().isEmpty()) return envCity.trim();
         return props.getProperty("weather.city", "Харьков").trim();
     }
 
@@ -56,6 +58,10 @@ public class BotConfig {
     }
 
     public double getWeatherLat() {
+        String envLat = System.getenv("WEATHER_LAT");
+        if (envLat != null && !envLat.trim().isEmpty()) {
+            try { return Double.parseDouble(envLat.trim()); } catch (Exception ignored) {}
+        }
         try {
             return Double.parseDouble(props.getProperty("weather.lat", "49.9935"));
         } catch (Exception e) {
@@ -64,6 +70,10 @@ public class BotConfig {
     }
 
     public double getWeatherLon() {
+        String envLon = System.getenv("WEATHER_LON");
+        if (envLon != null && !envLon.trim().isEmpty()) {
+            try { return Double.parseDouble(envLon.trim()); } catch (Exception ignored) {}
+        }
         try {
             return Double.parseDouble(props.getProperty("weather.lon", "36.2304"));
         } catch (Exception e) {
@@ -72,10 +82,14 @@ public class BotConfig {
     }
 
     public boolean isMorningReportEnabled() {
+        String envEnabled = System.getenv("MORNING_REPORT_ENABLED");
+        if (envEnabled != null && !envEnabled.trim().isEmpty()) return Boolean.parseBoolean(envEnabled.trim());
         return Boolean.parseBoolean(props.getProperty("morning.report.enabled", "true"));
     }
 
     public String getMorningReportTime() {
+        String envTime = System.getenv("MORNING_REPORT_TIME");
+        if (envTime != null && !envTime.trim().isEmpty()) return envTime.trim();
         return props.getProperty("morning.report.time", "08:00").trim();
     }
 
