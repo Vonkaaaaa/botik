@@ -24,7 +24,7 @@ public class WeatherService {
             lon = 36.2304;
         }
 
-        // Try Open-Meteo with precipitation probability & hourly breakdown
+        // Try Open-Meteo FIRST (detailed forecast with hourly breakdown & precipitation prob)
         String openMeteoResult = fetchOpenMeteoDetailed(city, lat, lon);
         if (openMeteoResult != null) return openMeteoResult;
 
@@ -45,11 +45,11 @@ public class WeatherService {
         try {
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(url))
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .header("Accept", "application/json")
-            .GET()
-            .timeout(Duration.ofSeconds(10))
-            .build();
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .header("Accept", "application/json")
+                    .GET()
+                    .timeout(Duration.ofSeconds(10))
+                    .build();
 
             HttpResponse<String> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() == 200) {
@@ -108,7 +108,7 @@ public class WeatherService {
                         for (int th : targetHours) {
                             for (int idx = 0; idx < Math.min(times.size(), 24); idx++) {
                                 String tStr = String.valueOf(times.get(idx));
-                                if (tStr.endsWith(String.format("%02d:00", th))) {
+                                if (tStr.endsWith(String.format("%02d:00", th)) || tStr.contains(String.format("T%02d:00", th))) {
                                     double hTemp = parseDouble(temps.get(idx));
                                     double hPop = pop != null && idx < pop.size() ? parseDouble(pop.get(idx)) : 0;
                                     int hCode = codes != null && idx < codes.size() ? (int) parseDouble(codes.get(idx)) : 0;
@@ -178,7 +178,6 @@ public class WeatherService {
                         sb.append(String.format(Locale.US, "\uD83D\uDCA7 <b>\u0412\u043B\u0430\u0436\u043D\u043E\u0441\u0442\u044C:</b> %.0f%%\n", humidity));
                         sb.append(String.format(Locale.US, "\uD83D\uDCA8 <b>\u0412\u0435\u0442\u0435\u0440:</b> %.1f \u043C/\u0441\n", wind));
 
-                        // Extract min/max temp and precip probability from weather daily if available
                         if (json.get("weather") instanceof List) {
                             List<?> weatherList = (List<?>) json.get("weather");
                             if (!weatherList.isEmpty() && weatherList.get(0) instanceof Map) {
@@ -186,6 +185,32 @@ public class WeatherService {
                                 double maxT = parseDouble(today.get("maxtempC"));
                                 double minT = parseDouble(today.get("mintempC"));
                                 sb.append(String.format(Locale.US, "\n\uD83D\uDCC8 <b>\u0422\u0435\u043C\u043F\u0435\u0440\u0430\u0442\u0443\u0440\u0430 \u0437\u0430 \u0434\u0435\u043D\u044C:</b> \u043E\u0442 %.1f\u00B0C \u0434\u043E %.1f\u00B0C\n", minT, maxT));
+
+                                // Parse hourly from wttr.in
+                                if (today.get("hourly") instanceof List) {
+                                    List<?> hourlyList = (List<?>) today.get("hourly");
+                                    sb.append("\n\uD83D\uDD52 <b>\u041F\u0440\u043E\u0433\u043D\u043E\u0437 \u043F\u043E \u0447\u0430\u0441\u0430\u043C:</b>\n");
+                                    for (Object hObj : hourlyList) {
+                                        if (hObj instanceof Map) {
+                                            Map<String, Object> hMap = (Map<String, Object>) hObj;
+                                            int timeVal = (int) parseDouble(hMap.get("time"));
+                                            int hour = timeVal / 100;
+                                            double hTemp = parseDouble(hMap.get("tempC"));
+                                            double hPop = parseDouble(hMap.get("chanceofrain"));
+
+                                            String hDesc = "";
+                                            if (hMap.get("lang_ru") instanceof List) {
+                                                List<?> lr = (List<?>) hMap.get("lang_ru");
+                                                if (!lr.isEmpty() && lr.get(0) instanceof Map) {
+                                                    hDesc = String.valueOf(((Map<String, Object>) lr.get(0)).get("value"));
+                                                }
+                                            }
+                                            String hEmoji = getEmojiFromDesc(hDesc);
+
+                                            sb.append(String.format(Locale.US, "  • %02d:00  %s  %.1f\u00B0C  (\u2614 %.0f%%)\n", hour, hEmoji, hTemp, hPop));
+                                        }
+                                    }
+                                }
                             }
                         }
 
@@ -232,7 +257,7 @@ public class WeatherService {
     private String getWeatherDescription(int code) {
         switch (code) {
             case 0: return "\u042F\u0441\u043D\u043E";
-            case 1: return "\u041F\u0440\u0435\u0438\u043C\u0443\u0449\u0435\u0441\u0442\u0432\u0435\u043D\u043D\u043E \u044F\u0441\u043D\u043E";
+            case 1: return "\u041F\u0430\u0441\u043C\u0443\u0440\u043D\u043E";
             case 2: return "\u041F\u0435\u0440\u0435\u043C\u0435\u043D\u043D\u0430\u044F \u043E\u0431\u043B\u0430\u0447\u043D\u043E\u0441\u0442\u044C";
             case 3: return "\u041F\u0430\u0441\u043C\u0443\u0440\u043D\u043E";
             case 45: case 48: return "\u0422\u0443\u043C\u0430\u043D";
