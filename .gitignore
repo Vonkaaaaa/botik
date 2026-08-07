@@ -1,0 +1,16 @@
+# Config & secrets (IMPORTANT: Do NOT commit your Bot Token!)
+config.properties
+
+# Local data & database files
+data/
+*.db
+
+# Build artifacts
+out/
+target/
+bin/
+
+# IDE files
+.idea/
+*.iml
+.DS_Store
