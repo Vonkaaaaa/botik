@@ -17,20 +17,43 @@ public class WeatherService {
             .followRedirects(HttpClient.Redirect.ALWAYS)
             .build();
 
+    // Cache weather report in memory for 15 minutes to avoid hitting API rate limits
+    private String cachedReport = null;
+    private long cacheTime = 0;
+    private static final long CACHE_DURATION_MS = 15 * 60 * 1000; // 15 minutes
+
     @SuppressWarnings("unchecked")
     public String getWeatherReport(String city, double lat, double lon) {
+        long now = System.currentTimeMillis();
+        if (cachedReport != null && (now - cacheTime) < CACHE_DURATION_MS) {
+            return cachedReport;
+        }
+
         if (lat == 0.0 || lon == 0.0) {
             lat = 49.9935;
             lon = 36.2304;
         }
 
-        // Try Open-Meteo FIRST (detailed forecast with hourly breakdown & precipitation prob)
-        String openMeteoResult = fetchOpenMeteoDetailed(city, lat, lon);
-        if (openMeteoResult != null) return openMeteoResult;
+        // Try Open-Meteo first
+        String result = fetchOpenMeteoDetailed(city, lat, lon);
+        if (result != null) {
+            cachedReport = result;
+            cacheTime = now;
+            return result;
+        }
 
         // Fallback: wttr.in
-        String wttrResult = fetchWttrInWeather(city);
-        if (wttrResult != null) return wttrResult;
+        result = fetchWttrInWeather(city);
+        if (result != null) {
+            cachedReport = result;
+            cacheTime = now;
+            return result;
+        }
+
+        // If both fail but we have a stale cache, return stale cache
+        if (cachedReport != null) {
+            return cachedReport;
+        }
 
         return "\u26A0\uFE0F \u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u0434\u0430\u043D\u043D\u044B\u0435 \u043E \u043F\u043E\u0433\u043E\u0434\u0435 \u0434\u043B\u044F \u0433. " + city + ". \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439\u0442\u0435 \u043F\u043E\u0437\u0436\u0435.";
     }
@@ -45,7 +68,7 @@ public class WeatherService {
         try {
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(url))
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                     .header("Accept", "application/json")
                     .GET()
                     .timeout(Duration.ofSeconds(10))
@@ -96,7 +119,6 @@ public class WeatherService {
                         }
                     }
 
-                    // Hourly forecast summary for 09:00, 12:00, 15:00, 18:00, 21:00
                     if (hourly != null && hourly.get("time") instanceof List) {
                         List<?> times = (List<?>) hourly.get("time");
                         List<?> temps = (List<?>) hourly.get("temperature_2m");
@@ -123,10 +145,13 @@ public class WeatherService {
                     return sb.toString();
                 }
             } else {
-                System.err.println("[WeatherService] Open-Meteo returned HTTP " + resp.statusCode() + ": " + resp.body());
+                // Silently swallow HTTP 429 in logs
+                if (resp.statusCode() != 429) {
+                    System.err.println("[WeatherService] Open-Meteo returned HTTP " + resp.statusCode());
+                }
             }
         } catch (Exception e) {
-            System.err.println("[WeatherService] Open-Meteo error: " + e.getMessage());
+            // ignore
         }
         return null;
     }
@@ -186,7 +211,6 @@ public class WeatherService {
                                 double minT = parseDouble(today.get("mintempC"));
                                 sb.append(String.format(Locale.US, "\n\uD83D\uDCC8 <b>\u0422\u0435\u043C\u043F\u0435\u0440\u0430\u0442\u0443\u0440\u0430 \u0437\u0430 \u0434\u0435\u043D\u044C:</b> \u043E\u0442 %.1f\u00B0C \u0434\u043E %.1f\u00B0C\n", minT, maxT));
 
-                                // Parse hourly from wttr.in
                                 if (today.get("hourly") instanceof List) {
                                     List<?> hourlyList = (List<?>) today.get("hourly");
                                     sb.append("\n\uD83D\uDD52 <b>\u041F\u0440\u043E\u0433\u043D\u043E\u0437 \u043F\u043E \u0447\u0430\u0441\u0430\u043C:</b>\n");
@@ -217,11 +241,9 @@ public class WeatherService {
                         return sb.toString();
                     }
                 }
-            } else {
-                System.err.println("[WeatherService] wttr.in returned HTTP " + resp.statusCode());
             }
         } catch (Exception e) {
-            System.err.println("[WeatherService] wttr.in error: " + e.getMessage());
+            // ignore
         }
         return null;
     }
@@ -257,7 +279,7 @@ public class WeatherService {
     private String getWeatherDescription(int code) {
         switch (code) {
             case 0: return "\u042F\u0441\u043D\u043E";
-            case 1: return "\u041F\u0430\u0441\u043C\u0443\u0440\u043D\u043E";
+            case 1: return "\u041F\u0440\u0435\u0438\u043C\u0443\u0449\u0435\u0441\u0442\u0432\u0435\u043D\u043D\u043E \u044F\u0441\u043D\u043E";
             case 2: return "\u041F\u0435\u0440\u0435\u043C\u0435\u043D\u043D\u0430\u044F \u043E\u0431\u043B\u0430\u0447\u043D\u043E\u0441\u0442\u044C";
             case 3: return "\u041F\u0430\u0441\u043C\u0443\u0440\u043D\u043E";
             case 45: case 48: return "\u0422\u0443\u043C\u0430\u043D";

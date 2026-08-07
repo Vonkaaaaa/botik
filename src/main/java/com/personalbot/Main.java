@@ -85,7 +85,7 @@ public class Main {
 
     /**
      * Starts a minimal HTTP server on $PORT so Render's health check passes.
-     * Without this, Render kills the container with 503.
+     * Properly handles HEAD requests to avoid JDK HttpServer warning logs.
      */
     private static void startHealthCheckServer() {
         try {
@@ -93,15 +93,27 @@ public class Main {
             HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
             server.createContext("/", exchange -> {
                 String response = "OK - Telegram Bot is running";
-                exchange.sendResponseHeaders(200, response.getBytes().length);
-                exchange.getResponseBody().write(response.getBytes());
+                byte[] bytes = response.getBytes();
+                boolean isHead = "HEAD".equalsIgnoreCase(exchange.getRequestMethod());
+                if (isHead) {
+                    exchange.sendResponseHeaders(200, -1);
+                } else {
+                    exchange.sendResponseHeaders(200, bytes.length);
+                    exchange.getResponseBody().write(bytes);
+                }
                 exchange.getResponseBody().close();
             });
             server.createContext("/health", exchange -> {
                 String response = "{\"status\":\"UP\"}";
+                byte[] bytes = response.getBytes();
                 exchange.getResponseHeaders().set("Content-Type", "application/json");
-                exchange.sendResponseHeaders(200, response.getBytes().length);
-                exchange.getResponseBody().write(response.getBytes());
+                boolean isHead = "HEAD".equalsIgnoreCase(exchange.getRequestMethod());
+                if (isHead) {
+                    exchange.sendResponseHeaders(200, -1);
+                } else {
+                    exchange.sendResponseHeaders(200, bytes.length);
+                    exchange.getResponseBody().write(bytes);
+                }
                 exchange.getResponseBody().close();
             });
             server.setExecutor(null);
