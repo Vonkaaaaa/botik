@@ -8,7 +8,6 @@ RUN mvn clean package -DskipTests
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
 COPY --from=builder /app/target/personal-telegram-bot-1.0.0.jar app.jar
-COPY config.properties .
 
 ENV PORT=8080
 EXPOSE 8080
