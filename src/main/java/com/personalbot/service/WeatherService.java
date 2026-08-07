@@ -9,6 +9,7 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Locale;
 import java.util.Map;
+import java.util.List;
 
 public class WeatherService {
     private final HttpClient httpClient = HttpClient.newBuilder()
@@ -23,21 +24,116 @@ public class WeatherService {
             lon = 36.2304;
         }
 
-        // Try wttr.in FIRST (no rate limits, supports city names)
+        // Try Open-Meteo with precipitation probability & hourly breakdown
+        String openMeteoResult = fetchOpenMeteoDetailed(city, lat, lon);
+        if (openMeteoResult != null) return openMeteoResult;
+
+        // Fallback: wttr.in
         String wttrResult = fetchWttrInWeather(city);
         if (wttrResult != null) return wttrResult;
-
-        // Fallback: Open-Meteo API
-        String openMeteoResult = fetchOpenMeteo(city, lat, lon);
-        if (openMeteoResult != null) return openMeteoResult;
 
         return "\u26A0\uFE0F \u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u0434\u0430\u043D\u043D\u044B\u0435 \u043E \u043F\u043E\u0433\u043E\u0434\u0435 \u0434\u043B\u044F \u0433. " + city + ". \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439\u0442\u0435 \u043F\u043E\u0437\u0436\u0435.";
     }
 
     @SuppressWarnings("unchecked")
+    private String fetchOpenMeteoDetailed(String city, double lat, double lon) {
+        String url = String.format(Locale.US,
+                "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation&hourly=temperature_2m,precipitation_probability,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&timezone=auto",
+                lat, lon
+        );
+
+        try {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .header("Accept", "application/json")
+            .GET()
+            .timeout(Duration.ofSeconds(10))
+            .build();
+
+            HttpResponse<String> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() == 200) {
+                Map<String, Object> json = (Map<String, Object>) JsonUtil.parse(resp.body());
+                Map<String, Object> current = (Map<String, Object>) json.get("current");
+                Map<String, Object> daily = (Map<String, Object>) json.get("daily");
+                Map<String, Object> hourly = (Map<String, Object>) json.get("hourly");
+
+                if (current != null) {
+                    double temp = parseDouble(current.get("temperature_2m"));
+                    double feels = parseDouble(current.get("apparent_temperature"));
+                    double humidity = parseDouble(current.get("relative_humidity_2m"));
+                    double windKmh = parseDouble(current.get("wind_speed_10m"));
+                    double wind = windKmh / 3.6;
+                    int wcode = (int) parseDouble(current.get("weather_code"));
+
+                    String conditionEmoji = getWeatherEmoji(wcode);
+                    String conditionText = getWeatherDescription(wcode);
+
+                    double precipProbMax = 0;
+                    if (daily != null && daily.get("precipitation_probability_max") instanceof List) {
+                        List<?> precipList = (List<?>) daily.get("precipitation_probability_max");
+                        if (!precipList.isEmpty()) {
+                            precipProbMax = parseDouble(precipList.get(0));
+                        }
+                    }
+
+                    StringBuilder sb = new StringBuilder();
+                    sb.append(String.format("\uD83C\uDF24\uFE0F <b>\u041F\u043E\u0433\u043E\u0434\u0430 \u0432 \u0433. %s</b>\n", city));
+                    sb.append("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n");
+                    sb.append(String.format("%s <b>\u0421\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435:</b> %s\n", conditionEmoji, conditionText));
+                    sb.append(String.format(Locale.US, "\uD83C\uDF21\uFE0F <b>\u0422\u0435\u043C\u043F\u0435\u0440\u0430\u0442\u0443\u0440\u0430:</b> %.1f\u00B0C (\u043E\u0449\u0443\u0449\u0430\u0435\u0442\u0441\u044F \u043A\u0430\u043A %.1f\u00B0C)\n", temp, feels));
+                    sb.append(String.format(Locale.US, "\uD83D\uDCA7 <b>\u0412\u043B\u0430\u0436\u043D\u043E\u0441\u0442\u044C:</b> %.0f%%\n", humidity));
+                    sb.append(String.format(Locale.US, "\uD83D\uDCA8 <b>\u0412\u0435\u0442\u0435\u0440:</b> %.1f \u043C/\u0441\n", wind));
+                    sb.append(String.format(Locale.US, "\u2614\uFE0F <b>\u0412\u0435\u0440\u043E\u044F\u0442\u043D\u043E\u0441\u0442\u044C \u043E\u0441\u0430\u0434\u043A\u043E\u0432:</b> %.0f%%\n", precipProbMax));
+
+                    if (daily != null && daily.get("temperature_2m_max") instanceof List) {
+                        List<?> maxList = (List<?>) daily.get("temperature_2m_max");
+                        List<?> minList = (List<?>) daily.get("temperature_2m_min");
+                        if (!maxList.isEmpty() && !minList.isEmpty()) {
+                            double maxT = parseDouble(maxList.get(0));
+                            double minT = parseDouble(minList.get(0));
+                            sb.append(String.format(Locale.US, "\n\uD83D\uDCC8 <b>\u0422\u0435\u043C\u043F\u0435\u0440\u0430\u0442\u0443\u0440\u0430 \u0437\u0430 \u0434\u0435\u043D\u044C:</b> \u043E\u0442 %.1f\u00B0C \u0434\u043E %.1f\u00B0C\n", minT, maxT));
+                        }
+                    }
+
+                    // Hourly forecast summary for 09:00, 12:00, 15:00, 18:00, 21:00
+                    if (hourly != null && hourly.get("time") instanceof List) {
+                        List<?> times = (List<?>) hourly.get("time");
+                        List<?> temps = (List<?>) hourly.get("temperature_2m");
+                        List<?> pop = (List<?>) hourly.get("precipitation_probability");
+                        List<?> codes = (List<?>) hourly.get("weather_code");
+
+                        sb.append("\n\uD83D\uDD52 <b>\u041F\u0440\u043E\u0433\u043D\u043E\u0437 \u043F\u043E \u0447\u0430\u0441\u0430\u043C:</b>\n");
+                        int[] targetHours = {9, 12, 15, 18, 21};
+                        for (int th : targetHours) {
+                            for (int idx = 0; idx < Math.min(times.size(), 24); idx++) {
+                                String tStr = String.valueOf(times.get(idx));
+                                if (tStr.endsWith(String.format("%02d:00", th))) {
+                                    double hTemp = parseDouble(temps.get(idx));
+                                    double hPop = pop != null && idx < pop.size() ? parseDouble(pop.get(idx)) : 0;
+                                    int hCode = codes != null && idx < codes.size() ? (int) parseDouble(codes.get(idx)) : 0;
+                                    String hEmoji = getWeatherEmoji(hCode);
+                                    sb.append(String.format(Locale.US, "  • %02d:00  %s  %.1f\u00B0C  (\u2614 %.0f%%)\n", th, hEmoji, hTemp, hPop));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    return sb.toString();
+                }
+            } else {
+                System.err.println("[WeatherService] Open-Meteo returned HTTP " + resp.statusCode() + ": " + resp.body());
+            }
+        } catch (Exception e) {
+            System.err.println("[WeatherService] Open-Meteo error: " + e.getMessage());
+        }
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
     private String fetchWttrInWeather(String city) {
         try {
-            // Use English city name for API reliability
             String query = city.contains("\u0425\u0430\u0440\u044C\u043A\u043E\u0432") || city.equalsIgnoreCase("Kharkiv") ? "Kharkiv" : city;
             String url = "https://wttr.in/" + query + "?format=j1";
 
@@ -52,8 +148,8 @@ public class WeatherService {
             HttpResponse<String> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() == 200 && resp.body() != null && resp.body().startsWith("{")) {
                 Map<String, Object> json = (Map<String, Object>) JsonUtil.parse(resp.body());
-                if (json != null && json.get("current_condition") instanceof java.util.List) {
-                    java.util.List<?> condList = (java.util.List<?>) json.get("current_condition");
+                if (json != null && json.get("current_condition") instanceof List) {
+                    List<?> condList = (List<?>) json.get("current_condition");
                     if (!condList.isEmpty() && condList.get(0) instanceof Map) {
                         Map<String, Object> current = (Map<String, Object>) condList.get(0);
                         double temp = parseDouble(current.get("temp_C"));
@@ -62,18 +158,11 @@ public class WeatherService {
                         double windKmh = parseDouble(current.get("windspeedKmph"));
                         double wind = windKmh / 3.6;
 
-                        // Get weather description
                         String desc = "";
-                        if (current.get("lang_ru") instanceof java.util.List) {
-                            java.util.List<?> langRu = (java.util.List<?>) current.get("lang_ru");
+                        if (current.get("lang_ru") instanceof List) {
+                            List<?> langRu = (List<?>) current.get("lang_ru");
                             if (!langRu.isEmpty() && langRu.get(0) instanceof Map) {
                                 desc = String.valueOf(((Map<String, Object>) langRu.get(0)).get("value"));
-                            }
-                        }
-                        if (desc.isEmpty() && current.get("weatherDesc") instanceof java.util.List) {
-                            java.util.List<?> wdList = (java.util.List<?>) current.get("weatherDesc");
-                            if (!wdList.isEmpty() && wdList.get(0) instanceof Map) {
-                                desc = String.valueOf(((Map<String, Object>) wdList.get(0)).get("value"));
                             }
                         }
 
@@ -89,6 +178,17 @@ public class WeatherService {
                         sb.append(String.format(Locale.US, "\uD83D\uDCA7 <b>\u0412\u043B\u0430\u0436\u043D\u043E\u0441\u0442\u044C:</b> %.0f%%\n", humidity));
                         sb.append(String.format(Locale.US, "\uD83D\uDCA8 <b>\u0412\u0435\u0442\u0435\u0440:</b> %.1f \u043C/\u0441\n", wind));
 
+                        // Extract min/max temp and precip probability from weather daily if available
+                        if (json.get("weather") instanceof List) {
+                            List<?> weatherList = (List<?>) json.get("weather");
+                            if (!weatherList.isEmpty() && weatherList.get(0) instanceof Map) {
+                                Map<String, Object> today = (Map<String, Object>) weatherList.get(0);
+                                double maxT = parseDouble(today.get("maxtempC"));
+                                double minT = parseDouble(today.get("mintempC"));
+                                sb.append(String.format(Locale.US, "\n\uD83D\uDCC8 <b>\u0422\u0435\u043C\u043F\u0435\u0440\u0430\u0442\u0443\u0440\u0430 \u0437\u0430 \u0434\u0435\u043D\u044C:</b> \u043E\u0442 %.1f\u00B0C \u0434\u043E %.1f\u00B0C\n", minT, maxT));
+                            }
+                        }
+
                         return sb.toString();
                     }
                 }
@@ -97,68 +197,6 @@ public class WeatherService {
             }
         } catch (Exception e) {
             System.err.println("[WeatherService] wttr.in error: " + e.getMessage());
-        }
-        return null;
-    }
-
-    @SuppressWarnings("unchecked")
-    private String fetchOpenMeteo(String city, double lat, double lon) {
-        String url = String.format(Locale.US,
-                "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto",
-                lat, lon
-        );
-
-        try {
-            HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .header("User-Agent", "PersonalTelegramBot/1.0")
-                    .header("Accept", "application/json")
-                    .GET()
-                    .timeout(Duration.ofSeconds(10))
-                    .build();
-
-            HttpResponse<String> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() == 200) {
-                Map<String, Object> json = (Map<String, Object>) JsonUtil.parse(resp.body());
-                Map<String, Object> current = (Map<String, Object>) json.get("current");
-
-                if (current != null) {
-                    double temp = parseDouble(current.get("temperature_2m"));
-                    double feels = parseDouble(current.get("apparent_temperature"));
-                    double humidity = parseDouble(current.get("relative_humidity_2m"));
-                    double windKmh = parseDouble(current.get("wind_speed_10m"));
-                    double wind = windKmh / 3.6;
-                    int wcode = (int) parseDouble(current.get("weather_code"));
-
-                    String conditionEmoji = getWeatherEmoji(wcode);
-                    String conditionText = getWeatherDescription(wcode);
-
-                    StringBuilder sb = new StringBuilder();
-                    sb.append(String.format("\uD83C\uDF24\uFE0F <b>\u041F\u043E\u0433\u043E\u0434\u0430 \u0432 \u0433. %s</b>\n", city));
-                    sb.append("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n");
-                    sb.append(String.format("%s <b>\u0421\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435:</b> %s\n", conditionEmoji, conditionText));
-                    sb.append(String.format(Locale.US, "\uD83C\uDF21\uFE0F <b>\u0422\u0435\u043C\u043F\u0435\u0440\u0430\u0442\u0443\u0440\u0430:</b> %.1f\u00B0C (\u043E\u0449\u0443\u0449\u0430\u0435\u0442\u0441\u044F \u043A\u0430\u043A %.1f\u00B0C)\n", temp, feels));
-                    sb.append(String.format(Locale.US, "\uD83D\uDCA7 <b>\u0412\u043B\u0430\u0436\u043D\u043E\u0441\u0442\u044C:</b> %.0f%%\n", humidity));
-                    sb.append(String.format(Locale.US, "\uD83D\uDCA8 <b>\u0412\u0435\u0442\u0435\u0440:</b> %.1f \u043C/\u0441\n", wind));
-
-                    Map<String, Object> daily = (Map<String, Object>) json.get("daily");
-                    if (daily != null && daily.get("temperature_2m_max") instanceof java.util.List) {
-                        java.util.List<?> maxList = (java.util.List<?>) daily.get("temperature_2m_max");
-                        java.util.List<?> minList = (java.util.List<?>) daily.get("temperature_2m_min");
-                        if (!maxList.isEmpty() && !minList.isEmpty()) {
-                            double maxT = parseDouble(maxList.get(0));
-                            double minT = parseDouble(minList.get(0));
-                            sb.append(String.format(Locale.US, "\n\uD83D\uDCC8 <b>\u0421\u0435\u0433\u043E\u0434\u043D\u044F:</b> \u043E\u0442 %.1f\u00B0C \u0434\u043E %.1f\u00B0C", minT, maxT));
-                        }
-                    }
-
-                    return sb.toString();
-                }
-            } else {
-                System.err.println("[WeatherService] Open-Meteo returned HTTP " + resp.statusCode() + ": " + resp.body());
-            }
-        } catch (Exception e) {
-            System.err.println("[WeatherService] Open-Meteo error: " + e.getMessage());
         }
         return null;
     }
