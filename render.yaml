@@ -3,6 +3,7 @@ services:
     name: personal-telegram-bot
     env: docker
     plan: free
+    numInstances: 1
     dockerfilePath: ./Dockerfile
     envVars:
       - key: BOT_TOKEN
