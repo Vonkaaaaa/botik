@@ -6,6 +6,8 @@ import com.personalbot.service.*;
 import com.personalbot.telegram.CommandHandler;
 import com.personalbot.telegram.TelegramBot;
 
+import com.sun.net.httpserver.HttpServer;
+import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.Map;
 
@@ -13,24 +15,23 @@ public class Main {
 
     public static void main(String[] args) {
         System.out.println("=================================================");
-        System.out.println("🚀 Starting Personal Telegram Bot...");
+        System.out.println("Starting Personal Telegram Bot...");
         System.out.println("=================================================");
+
+        // 0. Start lightweight HTTP health-check server for Render
+        startHealthCheckServer();
 
         // 1. Load configuration
         BotConfig config = new BotConfig();
         String botToken = config.getBotToken();
 
         if (botToken == null || botToken.isEmpty() || botToken.equals("YOUR_TELEGRAM_BOT_TOKEN")) {
-            System.err.println("\n❌ ОШИБКА: Токен Telegram бота не установлен!");
-            System.err.println("═════════════════════════════════════════════════");
-            System.err.println("Пожалуйста, откройте файл 'config.properties' и укажите ваш токен от @BotFather:");
-            System.err.println("   bot.token=123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ");
-            System.err.println("\nИли задайте переменную окружения BOT_TOKEN.");
-            System.err.println("═════════════════════════════════════════════════\n");
+            System.err.println("\nERROR: Bot token is not set!");
+            System.err.println("Set BOT_TOKEN environment variable or edit config.properties.");
             return;
         }
 
-        // 2. Initialize Database (PostgreSQL if DATABASE_URL present, SQLite if jar present, or local JSON storage)
+        // 2. Initialize Database
         DatabaseManager dbManager = new DatabaseManager();
 
         // 3. Initialize Telegram Bot client & Services
@@ -42,7 +43,7 @@ public class Main {
         TorrentParserService torrentService = new TorrentParserService();
         TransportService transportService = new TransportService();
 
-        // 4. Initialize Scheduler Service (Reminders + Morning Report)
+        // 4. Initialize Scheduler Service
         SchedulerService schedulerService = new SchedulerService(
                 bot, config, reminderService, habitService, weatherService, currencyService
         );
@@ -54,12 +55,12 @@ public class Main {
                 habitService, torrentService, schedulerService, transportService
         );
 
-        System.out.println("✅ Telegram Bot initialized successfully!");
-        System.out.println("🤖 Bot is active and listening for messages...");
+        System.out.println("Telegram Bot initialized successfully!");
+        System.out.println("Bot is active and listening for messages...");
 
-        // Add Shutdown Hook
+        // Shutdown Hook
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            System.out.println("🛑 Shutting down Personal Telegram Bot...");
+            System.out.println("Shutting down Personal Telegram Bot...");
             schedulerService.stop();
         }));
 
@@ -79,6 +80,35 @@ public class Main {
                     break;
                 }
             }
+        }
+    }
+
+    /**
+     * Starts a minimal HTTP server on $PORT so Render's health check passes.
+     * Without this, Render kills the container with 503.
+     */
+    private static void startHealthCheckServer() {
+        try {
+            int port = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
+            HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
+            server.createContext("/", exchange -> {
+                String response = "OK - Telegram Bot is running";
+                exchange.sendResponseHeaders(200, response.getBytes().length);
+                exchange.getResponseBody().write(response.getBytes());
+                exchange.getResponseBody().close();
+            });
+            server.createContext("/health", exchange -> {
+                String response = "{\"status\":\"UP\"}";
+                exchange.getResponseHeaders().set("Content-Type", "application/json");
+                exchange.sendResponseHeaders(200, response.getBytes().length);
+                exchange.getResponseBody().write(response.getBytes());
+                exchange.getResponseBody().close();
+            });
+            server.setExecutor(null);
+            server.start();
+            System.out.println("[HealthCheck] HTTP server listening on port " + port);
+        } catch (Exception e) {
+            System.err.println("[HealthCheck] Could not start HTTP server: " + e.getMessage());
         }
     }
 }
